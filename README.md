@@ -170,56 +170,6 @@ and dynamic sampling (groups where every rollout gets the same reward are skippe
 tolerance), program and fallback rates, tokens and latency, faithfulness, and paired bootstrap deltas against the
 reference system.
 
-## Installation
-
-```bash
-git clone https://github.com/gursheelsingh11/g2t-faithful-table-reasoning.git
-cd g2t-faithful-table-reasoning
-bash setup_env.sh                 # creates conda env `g2t`; edit the CUDA wheel / module line for your cluster
-conda activate g2t
-```
-
-Requirements: Python 3.11, PyTorch ≥ 2.4, transformers ≥ 4.51, peft ≥ 0.13, accelerate, datasets, bitsandbytes;
-optional vLLM and flash-attn. A 7B run needs A100-class GPUs for training; evaluation runs on any GPU with ≥ 24 GB.
-
-## Running the pipeline
-
-```bash
-# 0. set paths.root in config.yaml (needs ~70 GB), then download (node with internet)
-python download.py
-
-# 1. CPU checks, no GPU or downloads needed
-bash tests/run_cpu_tests.sh
-
-# 2. smoke test: every stage on tiny data with the real models
-sbatch slurm/smoke.sbatch
-
-# 3. full run (smoke: false): data → training in parallel → sharded eval → edit test → report
-bash slurm/submit_all.sh
-```
-
-Single stages and overrides:
-
-```bash
-python run.py --stage data --full
-torchrun --nproc_per_node=4 run.py --stage wtq_ours_grpo --full        # training stages: multi-GPU
-python run.py --stage eval --shard 0 --num_shards 4 --full              # one shard per GPU
-python run.py --stage wtq_ours_sft --set sft.lr=5e-5 --set run_name=lr5e-5
-python run.py --stage report --force                                    # redo a finished stage
-```
-
-Stages: `data`, `wtq_ours_sft`, `wtq_direct_sft`, `wtq_ours_rft`, `wtq_ours_grpo`, `wtq_direct_grpo`, `sparks_sft`,
-`sparks_grpo`, `graph_sft`, `graph_grpo`, `eval`, `cf`, `report`. Every stage is resumable.
-
-Ablations and analysis:
-
-```bash
-bash slurm/ablations.sh                                   # no RFT, no dynamic sampling, v8 teacher, depth 2, …
-python tools/faithfulness_common_set.py runs/g2t_7b       # paired faithfulness table
-```
-
-See [`docs/RUNNING.md`](docs/RUNNING.md) for cluster-specific details.
-
 
 
 ## Baselines and references
