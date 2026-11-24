@@ -9,21 +9,6 @@ CS 769 course project · IIT Bombay · Aug 2026 – present
 
 ---
 
-## Contents
-
-1. [Motivation](#motivation)
-2. [Method](#method)
-3. [Results](#results-at-7b)
-4. [Code structure](#code-structure)
-5. [Key components](#key-components)
-6. [Installation](#installation)
-7. [Running the pipeline](#running-the-pipeline)
-8. [Configuration](#configuration)
-9. [Outputs](#outputs)
-10. [Known issues](#known-issues)
-11. [Next steps](#next-steps)
-
----
 
 ## Motivation
 
