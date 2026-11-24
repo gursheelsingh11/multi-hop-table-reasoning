@@ -3,14 +3,6 @@
 **Small LLMs that answer table and graph questions by writing programs a deterministic engine executes, so every answer
 is grounded in the cells it was computed from.**
 
-CS 769 course project · IIT Bombay · Aug 2026 – present
-
-![System architecture](docs/architecture.png)
-
----
-
-
-## Motivation
 
 Fine-tuned language models often answer table questions correctly without using the table: a right answer is no evidence
 that the model read the evidence. We make the model **show its work as an executable program**. If the evidence cell is
