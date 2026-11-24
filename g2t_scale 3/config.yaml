@@ -1,0 +1,179 @@
+# =====================================================================================================================
+#  Executable-program table reasoning at 7B — WTQ (full) + graph-as-table paths, vs Table-R1 and Sparks baselines.
+#  1) smoke: true   -> tiny sizes; every stage and every system once (checks 7B, LoRA/QLoRA, multi-GPU, GRPO, baselines, logs)
+#  2) smoke: false  -> the final run. Same code; only sizes / steps change. Results go to a separate run folder.
+#  Tags:  [paper]  = value stated in the baseline paper     [not stated] = the paper gives no value; our choice is explained
+# =====================================================================================================================
+smoke: true
+run_name: g2t_7b
+seed: 0
+offline: true                    # compute nodes need no internet: everything comes from paths.models / paths.data (download.py)
+
+paths:
+  root: /path/to/your/workdir    # <-- EDIT (e.g. /scratch/<user>/g2t). models/ data/ runs/ live below it (~80 GB)
+  models: models
+  data: data
+  runs: runs
+  hf_cache: hf_cache
+
+models:
+  base: Qwen/Qwen2.5-7B-Instruct               # backbone of ours, the direct control and Sparks (Sparks 7B uses Qwen-2.5-7B-Instruct [paper])
+  table_r1_zero: Table-R1/Table-R1-Zero-7B     # released checkpoints (Yang et al., EMNLP 2025)
+  table_r1_sft: Table-R1/Table-R1-SFT-7B
+
+hardware:
+  dtype: auto                     # bf16 on A100/A40/A6000/L40/H100, fp16 on V100/T4 (fp16 GPUs: evaluation only)
+  attn_implementation: flash_attention_2      # -> sdpa automatically if flash-attn is missing or the GPU is pre-Ampere
+
+benchmarks: [wtq, crtqa, graph]     # wtq: head-to-head with Table-R1 (and Sparks re-implementation) | crtqa: head-to-head with Sparks' reported numbers
+
+systems:
+  wtq: [zs_direct, zs_cot, table_r1_zero, table_r1_sft, sparks_sft, sparks,
+        direct_sft, direct_grpo, ours_sft, ours_rft, ours_grpo, ours_grpo_sc]
+  crtqa: [zs_direct, zs_cot, table_r1_zero, table_r1_sft, sparks, direct_grpo, ours_grpo, ours_grpo_sc]   # all zero-shot on CRT-QA
+  graph: [zs_direct, zs_cot, table_r1_zero, table_r1_sft, sparks, direct_sft, direct_grpo,
+          ours_sft, ours_sft_mask, ours_sft_gmask, ours_grpo, ours_grpo_mask, ours_grpo_gmask]
+
+# --------------------------------------------------------------------------------------------- data
+wtq:
+  train_n: null                   # null = all 11,321 training questions
+  dev_n: null
+  test_n: null                    # null = all 4,344 test questions (pristine-unseen-tables)
+  eval_split: test                # 'validation' for hyper-parameter sweeps (never tune on test)
+  max_prompt_tokens: 4096         # = Table-R1's max prompt length [paper]; longer tables are cut row-wise (logged per instance)
+  max_prompt_tokens_train: 4096   # Table-R1 filtered training prompts > 4096 tokens [paper]; same rule for every trained system
+  rl_holdout_frac: 0.12           # share of training questions held out (disjoint) for GRPO — same pool for ours, control, Sparks-WTQ
+  teacher_depth: 3
+  teacher_max_rows: 120
+  teacher_max_cols: 16
+  teacher_workers: 16
+
+crtqa:
+  n: null                         # all questions (< 1K). Zero-shot for every system, as in Sparks (models not trained on CRT-QA)
+
+graph:
+  rep: gtable
+  data_seed: 0
+  eval_split: test
+  p_unreach: 0.25                 # improvement: v3 models never answered NONE (was 0.15)
+  deletion_aug: 0.2               # improvement: +20% training copies with a gold-path edge deleted (re-route or NONE)
+  n_train_per_task: 1500
+  n_test_per_task: 300            # x 3 tasks x (ID + OOD) = 1,800 test questions
+  n_val_per_task: 100
+  n_pool_per_task: 1500
+  grpo_mid_frac: 0.5
+  mask_h_max: 10
+  train_arms: [ours, direct]
+  sft: {epochs: 2, lr: 1.0e-4}
+  grpo: {steps: 200, B: 32, lr: 5.0e-6}
+
+# --------------------------------------------------------------------------------------------- ours + direct control (identical settings)
+lora: {r: 32, alpha: 64, dropout: 0.0}
+
+sft:
+  epochs: 2
+  lr: 1.0e-4                      # sweep on validation: slurm/sweep.sh (1e-4 / 5e-5 / 2e-4)
+  micro: 4
+  accum: 4                        # effective batch = micro x accum x n_GPUs (16 x 4 GPUs = 64 sequences)
+  max_tokens: 4608
+  max_tokens_per_micro: 14000
+  warmup_frac: 0.03
+  log_every: 20
+
+grpo:
+  steps: 200
+  B: 32                           # questions per step, split across GPUs
+  G: 8
+  micro: 8
+  minibatches: 4
+  lr: 5.0e-6
+  clip_low: 0.2                   # DAPO-style decoupled clipping
+  clip_high: 0.28
+  kl_beta: 0.0
+  temp: 1.0
+  max_new: 160
+  frac_covered: 0.7
+  dynamic_sampling: true          # improvement (v2/v3: groups with signal fell to 12%): oversample, keep groups whose rewards differ
+  oversample: 2
+  log_every: 5
+
+improvements:
+  rft: {enabled: true, k: 8, temp: 1.0, epochs: 1, lr_mult: 0.5, max_questions: null, min_replay: 2000}
+
+# --------------------------------------------------------------------------------------------- Sparks (Stoisser et al., TRL @ ACL 2025)
+sparks:
+  quant: 4bit                     # QLoRA: the 7B model was trained with Unsloth, QLoRA, bitsandbytes, PEFT adapters [paper]
+  lora: {r: 16, alpha: 16, dropout: 0.0}       # [not stated] -> Unsloth defaults
+  max_tokens: 4096                # [not stated]
+  show_rows: all                  # WTQ variant needs cell literals; the paper's BIRD prompts are schema-only (sparks_paper uses schema only)
+  sft_n: null                     # all 3,174 released CoT traces [paper]
+  sft: {lr: 2.0e-4, micro: 1, accum: 1, epochs: 1}           # lr 2e-4, batch size 1 [paper]; epochs [not stated] -> 1
+  grpo:                           # lr 1e-6, G = 8 [paper]; KL beta, clip, steps, lengths, temperature [not stated]
+    lr: 1.0e-6
+    G: 8
+    kl_beta: 0.04                 # [not stated] -> TRL GRPO default of that period; the paper's objective includes a KL term
+    clip_low: 0.2                 # [not stated] -> standard symmetric PPO/GRPO clip
+    clip_high: 0.2
+    dynamic_sampling: false       # not part of the paper's method
+    max_new: 1024
+    micro: 4
+    temp: 1.0
+  bird_required: false            # sparks_paper needs BIRD (data/bird/train/...); if missing it is skipped with a warning
+  bird_n: null
+
+# --------------------------------------------------------------------------------------------- evaluation
+eval:
+  backend: vllm                   # Table-R1 used vLLM for inference [paper]; falls back to HF generate if vLLM is missing
+  token_budget: 400000            # HF backend: batch x (prompt + new) tokens per generate call (A100-80GB 400k, 40GB 150k, 24GB 60k)
+  max_batch: 64
+  chunk: 500                      # instance logs are flushed every `chunk` questions (resumable)
+  only_models: null               # e.g. [table_r1_sft] to run only that model's systems on a big-memory GPU shard
+  prog_max_new: 160
+  zs_max_new: 64
+  sql_max_new: 1024
+  cot_temp: 0.6                   # [paper] inference temperature
+  cot_top_p: 0.95                 # [paper] inference top-p (validation used 1.0)
+  cot_max_new: 2048               # [paper] output limit for most models (Table-R1-Zero, zero-shot CoT)
+  cot_max_new_reasoning: 18000    # [paper] "for reasoning models, this limit is increased to 18,000 tokens"
+  reasoning_models: [table_r1_sft]  # distilled from DeepSeek-R1, trained with 20,480-token sequences [paper]
+  hf_max_new_cap: 8192            # if vLLM is unavailable, HF generation caps long outputs here (recorded per instance)
+  hybrid_fallback: true
+  sc_k: 8                         # ours_grpo_sc: samples per question
+  sc_temp: 0.7
+  vllm: {gpu_memory_utilization: 0.90, max_model_len: 24576}
+
+cf:
+  wtq_n: 800                      # covered test questions (~1,600 available); larger pool -> larger common set
+  wtq_seeds: 2
+  wtq_systems: [zs_direct, zs_cot, table_r1_zero, table_r1_sft, sparks, direct_grpo, ours_grpo]
+  graph_n: 300
+  graph_systems: [zs_direct, table_r1_zero, sparks, direct_grpo, ours_grpo, ours_grpo_mask, ours_grpo_gmask]
+  common_systems:                 # faithfulness on the SAME questions: those all of these systems answer correctly (main comparison set)
+    wtq: [table_r1_zero, table_r1_sft, sparks, direct_grpo, ours_grpo]
+    graph: [table_r1_zero, sparks, direct_grpo, ours_grpo, ours_grpo_mask]
+
+report:
+  reference: {wtq: ours_grpo, crtqa: ours_grpo, graph: ours_grpo_mask}   # pre-declared main systems; improvements are reported next to them
+  published:                      # cited numbers (not re-run), printed under each benchmark table; `compare: true` -> head-to-head line
+    wtq:
+      - {system: Table-R1-Zero-7B, value: 79.8, metric: "EM + GPT-4.1-mini re-judging of EM failures", source: "Yang et al., EMNLP 2025, Table 2", compare: true}
+      - {system: Table-R1-SFT-7B, value: 81.9, metric: "EM + GPT-4.1-mini re-judging of EM failures", source: "Yang et al., EMNLP 2025, Table 2", compare: true}
+      - {system: Qwen2.5-7B-Instruct, value: 54.8, metric: "EM + GPT-4.1-mini re-judging", source: "Yang et al., EMNLP 2025, Table 2"}
+    crtqa:
+      - {system: "Sparks: Qwen-2.5-7B-Instr SFT-CoT-GRPO", value: 54.0, metric: "exact match, zero-shot", source: "Stoisser et al., TRL @ ACL 2025, Table 1", compare: true}
+      - {system: "Sparks: Qwen-2.5-7B-Instr SFT-CoT", value: 46.2, metric: "exact match, zero-shot", source: "Stoisser et al., TRL @ ACL 2025, Table 1"}
+      - {system: "Sparks: Qwen-2.5-7B-Instr Base", value: 49.0, metric: "exact match, zero-shot", source: "Stoisser et al., TRL @ ACL 2025, Table 1"}
+      - {system: "Sparks: Qwen-2.5-14B-Instr SFT-CoT-GRPO", value: 59.2, metric: "exact match, zero-shot", source: "Stoisser et al., TRL @ ACL 2025, Table 1"}
+
+# --------------------------------------------------------------------------------------------- smoke-test overrides
+smoke_overrides:
+  wtq: {train_n: 400, dev_n: 60, test_n: 120, teacher_workers: 8}
+  graph: {n_train_per_task: 60, n_test_per_task: 20, n_val_per_task: 10, n_pool_per_task: 40,
+          sft: {epochs: 1}, grpo: {steps: 3, B: 8}}
+  sft: {epochs: 1, log_every: 2}
+  grpo: {steps: 3, B: 8, log_every: 1}
+  improvements: {rft: {max_questions: 40, k: 4, min_replay: 40}}
+  sparks: {sft_n: 120, bird_n: 200, grpo: {max_new: 384, steps: 3}}
+  crtqa: {n: 40}
+  eval: {chunk: 40, cot_max_new: 512, cot_max_new_reasoning: 1024, sql_max_new: 384, sc_k: 4}
+  cf: {wtq_n: 20, wtq_seeds: 1, graph_n: 15}
