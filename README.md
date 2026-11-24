@@ -220,49 +220,7 @@ python tools/faithfulness_common_set.py runs/g2t_7b       # paired faithfulness 
 
 See [`docs/RUNNING.md`](docs/RUNNING.md) for cluster-specific details.
 
-## Configuration
 
-All settings live in `config.yaml`:
-
-* `smoke`: `true` runs every stage on tiny data (default); set `false` or pass `--full` for the real run.
-* `benchmarks`: any of `wtq`, `crtqa`, `graph`.
-* `systems`: which systems to evaluate per benchmark.
-* `sft`, `grpo`: learning rates, epochs, LoRA rank, group size, clipping, dynamic sampling; RFT settings under `improvements.rft`.
-* `graph`: graph sizes, tasks, unreachable fraction, deletion augmentation, representation.
-* `eval`: backend (vLLM or HF), batch sizes, token budgets, self-consistency samples.
-* `cf`: number of edited questions and which systems take the edit test.
-
-## Outputs
-
-Each run writes to `<paths.runs>/<run_name>/`:
-
-```
-instances/<bench>/<system>.shard*.jsonl   one line per test question (prediction, mode, program, tokens, correctness)
-cf/<bench>/<system>.shard*.jsonl          counterfactual edit results
-train/*.jsonl                             training curves (loss, reward, informative-group share)
-report.md, summary_*.csv, metrics.json    final tables
-done/<stage>                              completion markers
-```
-
-Trained LoRA adapters are not stored in git because of GitHub's file-size limit.
-
-## Known issues
-
-* **Graph faithfulness numbers in `results/g2t_7b/report.md` are invalid.** The original graph generator iterated over
-  Python sets, whose order depends on per-process string hashing, so cluster jobs generated different graphs from the same
-  seed and edits were paired with the wrong originals. Fixed in `g2t/graph_tasks.py`; re-run with
-  `bash slurm/rerun_graph.sh`. Graph accuracies remain valid comparisons (every system saw 1,800 graphs from the same
-  generator), but they are not paired.
-* Sparks was not enabled in the 7B run, and CRT-QA stopped at the data stage (questions did not match table files).
-* `ours_grpo_sc` logs an executed-answer share of 0 (logging only; accuracy is correct).
-
-## Next steps
-
-1. Re-run graph evaluation with the fixed generator.
-2. GRPO reward that prefers executed programs (correct program 1.0, correct direct answer 0.7).
-3. Short reasoning (≤ 300 tokens) on the direct-answer path, where the accuracy gap to Table-R1 is.
-4. Harder GRPO training pool and iterated RFT; ablations and three seeds.
-5. CRT-QA, the Sparks comparison, and a real-world graph benchmark.
 
 ## Baselines and references
 
